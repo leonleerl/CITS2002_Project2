@@ -1,0 +1,5 @@
+.vscode
+cmake-build-debug
+output
+simulation.dSYM
+.idea
