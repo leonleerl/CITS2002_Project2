@@ -29,7 +29,6 @@ void initialize_memory()
     }
 }
 
-
 /*
  * return -1 nowhere available
  * return 0-15, available index
@@ -48,9 +47,52 @@ int find_ram_available_index()
 
 int next_page[4] = {0}; // 记录每个进程当前要加载的页面
 
+/*
+ * 找到 RAM 中某个进程的 LRU 页面
+ * return -1 if not found, otherwise return index
+ */
+int find_lru_page_for_process(int process_id)
+{
+    int lru_index = -1;
+    int lru_time = __INT_MAX__;
+    for (int i = 0; i < 16; i += 2)
+    {
+        if (ram[i].process_id == process_id && ram[i].last_accessed < lru_time)
+        {
+            lru_index = i;
+            lru_time = ram[i].last_accessed;
+        }
+    }
+    return lru_index;
+}
+
+/*
+ * 找到 RAM 中的全局 LRU 页面
+ * return index of the LRU page
+ */
+int find_global_lru_page()
+{
+    int lru_index = -1;
+    int lru_time = __INT_MAX__;
+    for (int i = 0; i < 16; i += 2)
+    {
+        if (ram[i].last_accessed < lru_time)
+        {
+            lru_index = i;
+            lru_time = ram[i].last_accessed;
+        }
+    }
+    return lru_index;
+}
+
 int main()
 {
     FILE *input_file = fopen("in.txt", "r");
+    if (!input_file) {
+        perror("无法打开输入文件");
+        return 1;
+    }
+
     initialize_memory();
 
     // current process id
@@ -59,6 +101,7 @@ int main()
     memory *virtual_memory_p;
     while (fscanf(input_file, "%d", &process_id) != EOF)
     {
+        printf("本轮进入进程：%d\n", process_id);
         // 获取当前进程的页面号
         int page_num = next_page[process_id];  // 获取下一个需要加载的页
         next_page[process_id] = (page_num + 1) % 4; // 更新下一个页面号（在 0 到 3 之间循环）
@@ -77,18 +120,70 @@ int main()
             ram[index] = *virtual_memory_p;
             ram[index + 1] = virtual_memory_p[1]; // 加载两个位置
 
-            printf("Process %d's page %d loaded into RAM at index %d\n", process_id, page_num, index);
+            // 更新 last_accessed
+            ram[index].last_accessed = ++last_accessed;
+            ram[index + 1].last_accessed = last_accessed;
+
+            // printf("Process %d's page %d loaded into RAM at index %d\n", process_id, page_num, index);
         }
         // if ram is full
         else
         {
-            // 处理 RAM 满的情况（例如 LRU 替换算法）
+            // 查找是否有同一进程的页面在 RAM 中
+            int lru_index = find_lru_page_for_process(process_id);
+            if (lru_index != -1)
+            {
+                // 有同一进程的页面，替换 LRU 页面
+                ram[lru_index] = *virtual_memory_p;
+                ram[lru_index + 1] = virtual_memory_p[1]; // 加载两个位置
+
+                // 更新 last_accessed
+                ram[lru_index].last_accessed = ++last_accessed;
+                ram[lru_index + 1].last_accessed = last_accessed;
+
+                printf("Process %d's page %d replaced its LRU page in RAM at index %d\n", process_id, page_num, lru_index);
+            }
+            else
+            {
+                // 没有同一进程的页面，进行全局 LRU 替换
+                lru_index = find_global_lru_page();
+
+                ram[lru_index] = *virtual_memory_p;
+                ram[lru_index + 1] = virtual_memory_p[1]; // 加载两个位置
+
+                // 更新 last_accessed
+                ram[lru_index].last_accessed = ++last_accessed;
+                ram[lru_index + 1].last_accessed = last_accessed;
+
+                printf("Process %d's page %d replaced global LRU page in RAM at index %d\n", process_id, page_num, lru_index);
+            }
         }
-        last_accessed++;
+        // 打印 RAM 的所有内容
+        printf("RAM 内容:\n");
+        for (int i = 0; i < 16; i++)
+        {
+            if (ram[i].process_id != -1)
+            {
+                printf("Index %d: Process %d, Page %d, Last Accessed %d\n", i, ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
+            }
+            else
+            {
+                printf("Index %d: 空闲\n", i);
+            }
+        }
+        printf("=================================\n");
     }
     // Close the input file
     fclose(input_file);
 
+
+
+    // // 打印虚拟内存的所有内容
+    // printf("\n虚拟内存内容:\n");
+    // for (int i = 0; i < 32; i++)
+    // {
+    //     printf("Index %d: Process %d, Page %d, Last Accessed %d\n", i, virtual_memory[i].process_id, virtual_memory[i].page_num, virtual_memory[i].last_accessed);
+    // }
+
     return 0;
 }
-
