@@ -8,8 +8,14 @@ typedef struct
     int last_accessed;
 } memory;
 
+typedef struct
+{
+    int frame_number; // 存储页面所在的帧号，如果页面不在 RAM 中则为 99
+} page_table_entry;
+
 memory virtual_memory[32]; // 虚拟内存
 memory ram[16];            // RAM
+page_table_entry page_table[4][4]; // 4 个进程的页表，每个进程有 4 个页面
 
 void initialize_memory()
 {
@@ -26,6 +32,14 @@ void initialize_memory()
     for (int i = 0; i < 16; i++)
     {
         ram[i].process_id = -1; // -1 表示空闲
+    }
+    // 初始化页表，所有页面开始时都在磁盘中，表示为 99
+    for (int pid = 0; pid < 4; pid++)
+    {
+        for (int page_num = 0; page_num < 4; page_num++)
+        {
+            page_table[pid][page_num].frame_number = 99;
+        }
     }
 }
 
@@ -45,7 +59,7 @@ int find_ram_available_index()
     return -1;
 }
 
-int next_page[4] = {0}; // 记录每个进程当前要加载的页面
+int next_page[4] = {0,0,0,0}; // 记录每个进程当前要加载的页面
 
 /*
  * 找到 RAM 中某个进程的 LRU 页面
@@ -85,9 +99,68 @@ int find_global_lru_page()
     return lru_index;
 }
 
-int main()
+void write_output(const char *output_file_name)
 {
-    FILE *input_file = fopen("in.txt", "r");
+    FILE *output_file = fopen(output_file_name, "w");
+    if (!output_file) {
+        perror("无法打开输出文件");
+        exit(1);
+    }
+
+    // 输出每个进程的页表
+    for (int pid = 0; pid < 4; pid++)
+    {
+        fprintf(output_file, "Process %d: ", pid);
+        for (int page_num = 0; page_num < 4; page_num++)
+        {
+            fprintf(output_file, "%d, ", page_table[pid][page_num].frame_number);
+        }
+        fprintf(output_file, "\n");
+    }
+
+    // 输出 RAM 的内容
+    fprintf(output_file, "\nRAM 内容:\n");
+    for (int i = 0; i < 16; i++)
+    {
+        if (ram[i].process_id != -1)
+        {
+            fprintf(output_file, "%d,%d,%d; ", ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
+        }
+        else
+        {
+            fprintf(output_file, "空闲; ");
+        }
+    }
+    fprintf(output_file, "\n");
+
+    fclose(output_file);
+}
+
+void print_ram_state(int step)
+{
+    printf("时间步 %d 的 RAM 状态:\n", step);
+    for (int i = 0; i < 16; i++)
+    {
+        if (ram[i].process_id != -1)
+        {
+            printf("%d,%d,%d; ", ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
+        }
+        else
+        {
+            printf("空闲; ");
+        }
+    }
+    printf("\n");
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc != 3) {
+        printf("Usage: %s <input_file> <output_file>\n", argv[0]);
+        return 1;
+    }
+
+    FILE *input_file = fopen(argv[1], "r");
     if (!input_file) {
         perror("无法打开输入文件");
         return 1;
@@ -99,9 +172,10 @@ int main()
     int process_id;
     int last_accessed = 0;
     memory *virtual_memory_p;
+    int step = 0;
     while (fscanf(input_file, "%d", &process_id) != EOF)
     {
-        printf("本轮进入进程：%d\n", process_id);
+        printf("当前进程：%d\n", process_id);
         // 获取当前进程的页面号
         int page_num = next_page[process_id];  // 获取下一个需要加载的页
         next_page[process_id] = (page_num + 1) % 4; // 更新下一个页面号（在 0 到 3 之间循环）
@@ -124,7 +198,10 @@ int main()
             ram[index].last_accessed = ++last_accessed;
             ram[index + 1].last_accessed = last_accessed;
 
-            // printf("Process %d's page %d loaded into RAM at index %d\n", process_id, page_num, index);
+            // 更新页表
+            page_table[process_id][page_num].frame_number = index / 2;
+
+            printf("Process %d's page %d loaded into RAM at index %d\n", process_id, page_num, index);
         }
         // if ram is full
         else
@@ -141,6 +218,9 @@ int main()
                 ram[lru_index].last_accessed = ++last_accessed;
                 ram[lru_index + 1].last_accessed = last_accessed;
 
+                // 更新页表
+                page_table[process_id][page_num].frame_number = lru_index / 2;
+
                 printf("Process %d's page %d replaced its LRU page in RAM at index %d\n", process_id, page_num, lru_index);
             }
             else
@@ -148,6 +228,12 @@ int main()
                 // 没有同一进程的页面，进行全局 LRU 替换
                 lru_index = find_global_lru_page();
 
+                // 更新被替换页面的页表
+                int replaced_process_id = ram[lru_index].process_id;
+                int replaced_page_num = ram[lru_index].page_num;
+                page_table[replaced_process_id][replaced_page_num].frame_number = 99;
+
+                // 执行替换
                 ram[lru_index] = *virtual_memory_p;
                 ram[lru_index + 1] = virtual_memory_p[1]; // 加载两个位置
 
@@ -155,35 +241,28 @@ int main()
                 ram[lru_index].last_accessed = ++last_accessed;
                 ram[lru_index + 1].last_accessed = last_accessed;
 
+                // 更新页表
+                page_table[process_id][page_num].frame_number = lru_index / 2;
+
                 printf("Process %d's page %d replaced global LRU page in RAM at index %d\n", process_id, page_num, lru_index);
             }
         }
-        // 打印 RAM 的所有内容
-        printf("RAM 内容:\n");
-        for (int i = 0; i < 16; i++)
-        {
-            if (ram[i].process_id != -1)
-            {
-                printf("Index %d: Process %d, Page %d, Last Accessed %d\n", i, ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
-            }
-            else
-            {
-                printf("Index %d: 空闲\n", i);
-            }
-        }
-        printf("=================================\n");
+        // 打印当前 RAM 的状态
+        print_ram_state(++step);
     }
     // Close the input file
     fclose(input_file);
 
-
-
-    // // 打印虚拟内存的所有内容
-    // printf("\n虚拟内存内容:\n");
-    // for (int i = 0; i < 32; i++)
-    // {
-    //     printf("Index %d: Process %d, Page %d, Last Accessed %d\n", i, virtual_memory[i].process_id, virtual_memory[i].page_num, virtual_memory[i].last_accessed);
-    // }
+    // 写入输出文件
+    write_output(argv[2]);
+    for(int i = 0; i < 4; i++)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            printf("%d\t", page_table[i][j].frame_number);
+        }
+        printf("\n");
+    }
 
     return 0;
 }
