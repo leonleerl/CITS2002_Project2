@@ -14,11 +14,12 @@ typedef struct
 
 memory virtual_memory[32]; // virtual memory
 memory ram[16]; // RAM
+int page_num; // page number for the current process
+int virtual_memory_index; // index of the current process from virtual memory
 int page_table[4][4]; // page table for each process. page_table[i][j] means page number j in process i
 int next_page[4]; // next_page[i] means the next page number of process i
 int process_id; // current process id from in.txt file
 int last_accessed; // When each page is brought into RAM, time step increased by 1.
-memory* virtual_memory_p; //
 
 /**
  * Initialise all data structures
@@ -51,10 +52,10 @@ void initialise_memory()
 }
 
 /**
- * Find available index of RAM
- * return:
- *   -1: nowhere available
- *   0-15: available index
+ * Find available index in RAM
+ * @return:
+ *      -1: nowhere available, which means RAM is full
+ *      0-15: available index
  */
 int find_ram_available_index()
 {
@@ -68,11 +69,12 @@ int find_ram_available_index()
     return -1;
 }
 
-/*
- * 找到 ram 中某个进程的 LRU 页面
- * return -1 if not found, otherwise return index
+/**
+ * find the index that can be replaced based on LRU algorithm
+ * @param is_global 1: search globally, 2: search within the same process
+ * @return -1 if not found, otherwise return index
  */
-int find_lru_page_index_for_process(int is_global)
+int find_lru_page_index_for_process(const int is_global)
 {
     int lru_index = -1;
     int lru_time = __INT_MAX__;
@@ -87,38 +89,64 @@ int find_lru_page_index_for_process(int is_global)
     return lru_index;
 }
 
-void write_output(const char* output_file_name)
+/**
+ * load page into RAM
+ * @param index current index in RAM
+ * @param virtual_memory_index current index in virtual memory
+ */
+void load_page_into_ram(const int index, const int virtual_memory_index) {
+    ram[index] = virtual_memory[virtual_memory_index]; // load the page from virtual memory to RAM
+    ram[index + 1] = virtual_memory[virtual_memory_index + 1]; // load the page from virtual memory to RAM
+
+    ram[index].last_accessed = last_accessed; // update last_accessed
+    ram[index + 1].last_accessed = last_accessed; // update last_accessed
+}
+
+/**
+ * update page table
+ * @param index current index in RAM
+ * @param virtual_memory_index current index in virtual memory
+ */
+void update_page_table(const int index, const int virtual_memory_index)
 {
-    FILE* output_file = fopen(output_file_name, "w");
-    if (!output_file)
+    page_table[process_id][virtual_memory[virtual_memory_index].page_num] = index / 2; // update page table
+}
+
+/**
+ * print the outcome into the output file
+ * @param file_name the output file name
+ */
+void write_output(const char* file_name)
+{
+    FILE* file = fopen(file_name, "w");
+    if (!file)
     {
         perror("Error opening output file");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
-    for (int pid = 0; pid < 4; pid++)
+    for (int i = 0; i < 4; i++)
     {
-        for (int page_num = 0; page_num < 4; page_num++)
+        for (int j = 0; j < 4; j++)
         {
-            if (page_num == 3)
+            if (j == 3)
             {
-                fprintf(output_file, "%d", page_table[pid][page_num]);
+                fprintf(file, "%d", page_table[i][j]);
                 break;
             }
-            fprintf(output_file, "%d, ", page_table[pid][page_num]);
+            fprintf(file, "%d, ", page_table[i][j]);
         }
-        fprintf(output_file, "\n");
+        fprintf(file, "\n");
     }
 
     for (int i = 0; i < 16; i++)
     {
         if (ram[i].process_id != -1)
         {
-            fprintf(output_file, "%d,%d,%d; ", ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
+            fprintf(file, "%d,%d,%d; ", ram[i].process_id, ram[i].page_num, ram[i].last_accessed);
         }
     }
-
-    fclose(output_file);
+    fclose(file);
 }
 
 int main(int argc, char* argv[])
@@ -132,62 +160,46 @@ int main(int argc, char* argv[])
     FILE* input_file = fopen(argv[1], "r");
     if (!input_file)
     {
-        perror("无法打开输入文件");
+        perror("Please input a valid file");
         return EXIT_FAILURE;
     }
 
-    initialise_memory();
-    while (fscanf(input_file, "%d", &process_id) != EOF)
+    initialise_memory(); // Initialise all data structures
+
+    while (fscanf(input_file, "%d", &process_id) != EOF) // read every process id in each loop from in.txt
     {
-        // 获取当前进程的页面号
-        int page_num = next_page[process_id];  // 获取下一个需要加载的页
-        next_page[process_id] = (page_num + 1) % 4;  // 更新下一个页面号（在 0 到 3 之间循环）
+        page_num = next_page[process_id];  // get the next page number of the current process
+        virtual_memory_index = process_id * 8 + page_num * 2;  // get the current index from virtual memory based on process id and page number
+        next_page[process_id] = (page_num + 1) % 4;  // update the next page number
 
-        // 计算虚拟内存中的页面索引
-        int virtual_memory_index = process_id * 8 + page_num * 2;  // 计算虚拟内存位置
-        virtual_memory_p = &virtual_memory[virtual_memory_index];  // 使用指针指向虚拟内存中的正确位置
+        int index = find_ram_available_index(); // find the available index in RAM
 
-        // 查找 RAM 中的可用索引
-        int index = find_ram_available_index();
-
-        // 准备执行页面替换（如果需要）
+        // if index is -1, RAM need to replace certain page
         if (index == -1)
         {
-            // 查找最少使用页面的索引
-            index = find_lru_page_index_for_process(0);
-            // 如果没有相同进程的页面，执行全局替换
+            index = find_lru_page_index_for_process(0); // search for the index replaceable in the same process based on LRU algorithm
+            // if there is no same process in RAM
             if (index == -1)
             {
-                index = find_lru_page_index_for_process(1);
-                // 更新被替换页面的页表
-                page_table[ram[index].process_id][ram[index].page_num] = 99;  // 标记为在磁盘中
+                index = find_lru_page_index_for_process(1); // search for the index replaceable globally
+                page_table[ram[index].process_id][ram[index].page_num] = 99; // update the replaced page in page table
             }
+            // if the same process exists in RAM
             else
             {
-                // 同一进程在 RAM 中，标记其页面为在磁盘中
-                page_table[process_id][ram[index].page_num] = 99;
+                page_table[process_id][ram[index].page_num] = 99;// update the replaced page in page table
             }
         }
 
-        // 将虚拟内存页面加载到 RAM
-        ram[index] = *virtual_memory_p++;
-        ram[index + 1] = *virtual_memory_p;  // 加载两个位置
+        load_page_into_ram(index, virtual_memory_index); // load page into ram
+        update_page_table(index, virtual_memory_index); // update page table
 
-        // 更新 last_accessed
-        ram[index].last_accessed = last_accessed;
-        ram[index + 1].last_accessed = last_accessed;
-
-        // 更新页表
-        page_table[process_id][page_num] = index / 2;
-
-        ++last_accessed;
+        ++last_accessed; // time step increased by 1 in each loop
     }
 
-    // Close the input file
-    fclose(input_file);
+    fclose(input_file); // Close the input file
 
-    // 写入输出文件
-    write_output(argv[2]);
+    write_output(argv[2]); // write to out.txt
 
     return EXIT_SUCCESS;
 }
